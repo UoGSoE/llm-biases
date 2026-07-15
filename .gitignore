@@ -1,0 +1,7 @@
+.venv
+**/__pycache__
+.env
+trials_*.jsonl
+.ait/
+.ant/
+IDEA.md
