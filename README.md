@@ -85,6 +85,17 @@ which prints, per model and eval, something like:
 
 (Genuine output from a July 2026 run — measured, not mocked.)
 
+For something you can email to a colleague, render the same records as a
+self-contained HTML report — same tendency sentences up top, charts and
+tables below, no external requests:
+
+```sh
+uv run visualise.py trials_20260715_193000.jsonl
+```
+
+Or add `--html` to the run itself to get the report written alongside the
+JSONL. Both doors share the same code, so they can't drift apart.
+
 ## Reading the panel
 
 - **The stated-preference line** — of the answers where the model actually

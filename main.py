@@ -1,7 +1,7 @@
 import argparse
 import asyncio
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 
 import litellm
 from dotenv import load_dotenv
@@ -61,6 +61,7 @@ async def run_trial(trial: Trial, semaphore: asyncio.Semaphore, timeout: int) ->
                 trial.cost = None
         except Exception as e:
             trial.error = str(e)
+        trial.timestamp = datetime.now(timezone.utc).isoformat()
     return trial
 
 
@@ -87,6 +88,8 @@ def main() -> None:
     parser.add_argument("--pairs", type=int, default=5, help="pairs per eval (default 5)")
     parser.add_argument("--repeats", type=int, default=3, help="repeats per cell (default 3)")
     parser.add_argument("--output", help="output path (default trials_<timestamp>.jsonl)")
+    parser.add_argument("--html", action="store_true",
+                        help="also write a self-contained HTML report next to the output")
     parser.add_argument("--timeout", type=int, default=30, help="per-request timeout in seconds")
     parser.add_argument("--concurrency", type=int, default=10, help="max in-flight requests")
     args = parser.parse_args()
@@ -111,6 +114,13 @@ def main() -> None:
     if known:
         print(f"Cost: ${sum(known):.4f} across {len(known)}/{len(trials)} trials with known pricing", file=sys.stderr)
     print(f"Results written to {output}", file=sys.stderr)
+
+    if args.html:
+        from visualise import write_report
+
+        html_path = output.removesuffix(".jsonl") + ".html"
+        write_report(trials, html_path)
+        print(f"Report written to {html_path}", file=sys.stderr)
 
 
 if __name__ == "__main__":

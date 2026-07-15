@@ -20,6 +20,8 @@ class Trial(BaseModel):
     response: str | None = None
     error: str | None = None
     cost: float | None = None  # USD via litellm's price map; None when unmapped
+    # Build time by default; the runner overwrites this with the completion
+    # time once a response (or error) lands, so it reads as "when answered".
     timestamp: str = Field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )

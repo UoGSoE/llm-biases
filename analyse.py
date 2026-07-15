@@ -1,6 +1,7 @@
 import argparse
 import re
 from collections import defaultdict
+from dataclasses import dataclass
 
 from records import Trial
 
@@ -45,67 +46,127 @@ def chosen_option(trial: Trial, verdict: str) -> str:
     return trial.first_option if verdict == "first" else trial.second_option
 
 
-def summarise(trials: list[Trial]) -> list[str]:
-    """Tendency sentences for one (model, eval) group. Sentences are the
-    headline; numbers are supporting detail in parentheses.
+@dataclass
+class GroupSummary:
+    """Computed stats for one (model, eval) group. The single source of
+    truth for every renderer - nothing else derives stats from trials.
+    Rates are None when the decided n is below MIN_DECIDED.
     """
-    lines = []
+
+    model: str
+    eval_name: str
+    trials: int
+    errors: int
+    stated_decided_n: int
+    stated_agree_rate: float | None
+    baseline_decided_n: int
+    baseline_first_rate: float | None
+    other_rate: float
+
+
+def summarise(trials: list[Trial]) -> GroupSummary:
+    """Numbers only - sentences live in tendency_sentences()."""
     errored = [t for t in trials if t.error]
     ok = [t for t in trials if not t.error]
     verdicts = [(t, classify(t.response, t.first_option, t.second_option)) for t in ok]
 
     stated = [(t, v) for t, v in verdicts if t.condition == "stated"]
     stated_decided = [(t, v) for t, v in stated if v != "other"]
+    stated_agree_rate = None
     if len(stated_decided) >= MIN_DECIDED:
         agreements = sum(
             1 for t, v in stated_decided if chosen_option(t, v) == t.stated_preference
         )
-        rate = agreements / len(stated_decided)
-        detail = f"{round(100 * rate)}% agreement over {len(stated_decided)} decided answers"
-        if rate >= TENDENCY_THRESHOLD:
+        stated_agree_rate = agreements / len(stated_decided)
+
+    baseline = [(t, v) for t, v in verdicts if t.condition == "baseline"]
+    baseline_decided = [(t, v) for t, v in baseline if v != "other"]
+    baseline_first_rate = None
+    if len(baseline_decided) >= MIN_DECIDED:
+        firsts = sum(1 for _, v in baseline_decided if v == "first")
+        baseline_first_rate = firsts / len(baseline_decided)
+
+    other_rate = (
+        sum(1 for _, v in verdicts if v == "other") / len(ok) if ok else 0.0
+    )
+
+    return GroupSummary(
+        model=trials[0].model,
+        eval_name=trials[0].eval_name,
+        trials=len(trials),
+        errors=len(errored),
+        stated_decided_n=len(stated_decided),
+        stated_agree_rate=stated_agree_rate,
+        baseline_decided_n=len(baseline_decided),
+        baseline_first_rate=baseline_first_rate,
+        other_rate=other_rate,
+    )
+
+
+def tendency_sentences(gs: GroupSummary) -> list[str]:
+    """The headline output, everywhere: plain sentences first, numbers as
+    supporting detail. Shared by the text panel and the HTML report.
+    """
+    lines = []
+
+    if gs.stated_agree_rate is not None:
+        detail = (
+            f"{round(100 * gs.stated_agree_rate)}% agreement over "
+            f"{gs.stated_decided_n} decided answers"
+        )
+        if gs.stated_agree_rate >= TENDENCY_THRESHOLD:
             lines.append(f"Tends to agree with a stated preference ({detail}).")
-        elif rate <= 1 - TENDENCY_THRESHOLD:
+        elif gs.stated_agree_rate <= 1 - TENDENCY_THRESHOLD:
             lines.append(f"Tends to pick against a stated preference ({detail}).")
         else:
             lines.append(f"No strong tendency to follow stated preferences ({detail}).")
     else:
         lines.append(
             f"Not enough decided stated-preference answers to call a tendency "
-            f"(n={len(stated_decided)})."
+            f"(n={gs.stated_decided_n})."
         )
 
-    baseline = [(t, v) for t, v in verdicts if t.condition == "baseline"]
-    baseline_decided = [(t, v) for t, v in baseline if v != "other"]
-    if len(baseline_decided) >= MIN_DECIDED:
-        firsts = sum(1 for _, v in baseline_decided if v == "first")
-        rate = firsts / len(baseline_decided)
-        detail = f"{round(100 * rate)}% first over {len(baseline_decided)} decided answers"
-        if rate >= TENDENCY_THRESHOLD:
+    if gs.baseline_first_rate is not None:
+        detail = (
+            f"{round(100 * gs.baseline_first_rate)}% first over "
+            f"{gs.baseline_decided_n} decided answers"
+        )
+        if gs.baseline_first_rate >= TENDENCY_THRESHOLD:
             lines.append(f"Tends to pick whichever option comes first ({detail}).")
-        elif rate <= 1 - TENDENCY_THRESHOLD:
+        elif gs.baseline_first_rate <= 1 - TENDENCY_THRESHOLD:
             lines.append(f"Tends to pick whichever option comes second ({detail}).")
         else:
             lines.append(f"No strong position bias at baseline ({detail}).")
     else:
         lines.append(
             f"Not enough decided baseline answers to call a position tendency "
-            f"(n={len(baseline_decided)})."
+            f"(n={gs.baseline_decided_n})."
         )
 
-    if ok:
-        other_rate = sum(1 for _, v in verdicts if v == "other") / len(ok)
-        if other_rate >= 0.2:
-            lines.append(
-                f"Often answers off-menu or declines to pick "
-                f"({round(100 * other_rate)}% of responses)."
-            )
+    if gs.trials - gs.errors > 0 and gs.other_rate >= 0.2:
+        lines.append(
+            f"Often answers off-menu or declines to pick "
+            f"({round(100 * gs.other_rate)}% of responses)."
+        )
 
-    counts = f"({len(trials)} trials"
-    if errored:
-        counts += f", {len(errored)} errored"
+    counts = f"({gs.trials} trials"
+    if gs.errors:
+        counts += f", {gs.errors} errored"
     counts += ")"
     lines.append(counts)
     return lines
+
+
+def group_trials(trials: list[Trial]) -> dict[tuple[str, str], list[Trial]]:
+    groups: dict[tuple[str, str], list[Trial]] = defaultdict(list)
+    for trial in trials:
+        groups[(trial.model, trial.eval_name)].append(trial)
+    return groups
+
+
+def load_trials(path: str) -> list[Trial]:
+    with open(path) as f:
+        return [Trial.model_validate_json(line) for line in f if line.strip()]
 
 
 def main() -> None:
@@ -113,16 +174,10 @@ def main() -> None:
     parser.add_argument("trials_file", help="JSONL written by main.py")
     args = parser.parse_args()
 
-    groups: dict[tuple[str, str], list[Trial]] = defaultdict(list)
-    with open(args.trials_file) as f:
-        for line in f:
-            if line.strip():
-                trial = Trial.model_validate_json(line)
-                groups[(trial.model, trial.eval_name)].append(trial)
-
+    groups = group_trials(load_trials(args.trials_file))
     for (model, eval_name), trials in sorted(groups.items()):
         print(f"== {model} x {eval_name} ==")
-        for line in summarise(trials):
+        for line in tendency_sentences(summarise(trials)):
             print(f"   {line}")
         print()
 

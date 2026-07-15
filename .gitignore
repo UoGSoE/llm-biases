@@ -2,6 +2,8 @@
 **/__pycache__
 .env
 trials_*.jsonl
+trials_*.html
+.playwright-cli/
 .ait/
 .ant/
 IDEA.md
