@@ -115,15 +115,15 @@ def tendency_sentences(gs: GroupSummary) -> list[str]:
             f"{gs.stated_decided_n} decided answers"
         )
         if gs.stated_agree_rate >= TENDENCY_THRESHOLD:
-            lines.append(f"Tends to agree with a stated preference ({detail}).")
+            lines.append(f"Tends to agree with an expressed user preference ({detail}).")
         elif gs.stated_agree_rate <= 1 - TENDENCY_THRESHOLD:
-            lines.append(f"Tends to pick against a stated preference ({detail}).")
+            lines.append(f"Tends to pick against an expressed user preference ({detail}).")
         else:
-            lines.append(f"No strong tendency to follow stated preferences ({detail}).")
+            lines.append(f"No strong tendency to follow expressed user preferences ({detail}).")
     else:
         lines.append(
-            f"Not enough decided stated-preference answers to call a tendency "
-            f"(n={gs.stated_decided_n})."
+            f"Not enough decided answers with an expressed preference to call "
+            f"a tendency (n={gs.stated_decided_n})."
         )
 
     if gs.baseline_first_rate is not None:
@@ -136,11 +136,11 @@ def tendency_sentences(gs: GroupSummary) -> list[str]:
         elif gs.baseline_first_rate <= 1 - TENDENCY_THRESHOLD:
             lines.append(f"Tends to pick whichever option comes second ({detail}).")
         else:
-            lines.append(f"No strong position bias at baseline ({detail}).")
+            lines.append(f"No strong position bias by default ({detail}).")
     else:
         lines.append(
-            f"Not enough decided baseline answers to call a position tendency "
-            f"(n={gs.baseline_decided_n})."
+            f"Not enough decided no-preference answers to call a position "
+            f"tendency (n={gs.baseline_decided_n})."
         )
 
     if gs.trials - gs.errors > 0 and gs.other_rate >= 0.2:

@@ -169,7 +169,7 @@ def eval_section(eval_name: str, summaries: list[GroupSummary]) -> str:
 
     safe = eval_name.replace(" ", "-")
     blocks.append(
-        f"<figure><figcaption>Agreement with a stated preference</figcaption>"
+        f"<figure><figcaption>Agreement with an expressed user preference</figcaption>"
         + bar_chart(
             f"agree-{safe}",
             [(gs.model, gs.stated_agree_rate, gs.stated_decided_n) for gs in summaries],
@@ -181,7 +181,7 @@ def eval_section(eval_name: str, summaries: list[GroupSummary]) -> str:
         + "</figure>"
     )
     blocks.append(
-        f"<figure><figcaption>First-option rate at baseline (position bias)</figcaption>"
+        f"<figure><figcaption>First-option rate when no preference is expressed (position bias)</figcaption>"
         + bar_chart(
             f"first-{safe}",
             [(gs.model, gs.baseline_first_rate, gs.baseline_decided_n) for gs in summaries],
@@ -228,7 +228,7 @@ def render_html(trials: list[Trial]) -> str:
 <body>
 <header>
 <h1>LLM preference-bias report</h1>
-<p>Forced-choice tendencies: does a stated preference bend the answer, and does option order matter?</p>
+<p>Forced-choice tendencies: does an expressed preference bend the answer, and does option order matter?</p>
 </header>
 <main>{sections}</main>
 <footer>
