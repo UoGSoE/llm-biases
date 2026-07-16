@@ -23,7 +23,7 @@ matters.
 - Responses are free text on purpose: forcing a structured answer would
   change the thing being measured. A forgiving matcher maps each response to
   one of the two options; anything else (waffle, refusals, "both!") is
-  counted and reported as off-menu rather than dropped.
+  counted and reported rather than dropped.
 - Every trial is written as a JSON line with its ground truth (options,
   ordering, stated preference) recorded at generation time. The analysis
   reads those records only; it never re-parses prompt text.
@@ -101,9 +101,19 @@ uv run visualise.py trials_20260715_193000.jsonl
 Or add `--html` to the run itself to get the report written alongside the
 JSONL. Both doors share the same code, so they can't drift apart.
 
+Point it at several files at once and the same report becomes a
+side-by-side comparison of every model in them. For the big-picture cut —
+the verdict table and comparison charts, with the per-model detail and
+data tables folded away — add `--brief`:
+
+```sh
+uv run visualise.py examples/*.jsonl --brief -o comparison.html
+```
+
 If you'd rather see all of this without spending anything, the
-[`examples/`](examples/) directory holds a real 1,440-trial run — raw
-records, text panel, and HTML report.
+[`examples/`](examples/) directory holds real runs — an OpenAI family, an
+Anthropic family, and a mixed batch of open-weight models via OpenRouter —
+as raw records, text panels, and HTML reports.
 
 ## Reading the panel
 
@@ -118,8 +128,8 @@ records, text panel, and HTML report.
   (at least 80% one way over at least 5 decided answers) with no preference
   expressed. This is where a model's own leanings show up — bigger numbers,
   one character over another.
-- **The off-menu line** — appears when 20% or more of responses did not
-  decode to either option: refusals, hedging, essays. That's behaviour
+- **The declined-to-pick line** — appears when 20% or more of responses did
+  not decode to either option: refusals, hedging, essays. That's behaviour
   worth knowing about too.
 - A tendency is only claimed beyond 60/40 with at least 10 decided answers;
   below that the panel says there isn't enough to call, rather than
