@@ -59,6 +59,11 @@ async def run_trial(trial: Trial, semaphore: asyncio.Semaphore, timeout: int) ->
                 trial.cost = litellm.completion_cost(completion_response=response)
             except Exception:
                 trial.cost = None
+            usage = getattr(response, "usage", None)
+            trial.prompt_tokens = getattr(usage, "prompt_tokens", None)
+            trial.completion_tokens = getattr(usage, "completion_tokens", None)
+            details = getattr(usage, "completion_tokens_details", None)
+            trial.reasoning_tokens = getattr(details, "reasoning_tokens", None)
         except Exception as e:
             trial.error = str(e)
         trial.timestamp = datetime.now(timezone.utc).isoformat()

@@ -20,6 +20,12 @@ class Trial(BaseModel):
     response: str | None = None
     error: str | None = None
     cost: float | None = None  # USD via litellm's price map; None when unmapped
+    # Usage as reported by the provider; None when it reports nothing.
+    # reasoning_tokens is billed hidden thinking — often the real cost driver,
+    # and invisible in the response text.
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    reasoning_tokens: int | None = None
     # Build time by default; the runner overwrites this with the completion
     # time once a response (or error) lands, so it reads as "when answered".
     timestamp: str = Field(

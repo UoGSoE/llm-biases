@@ -2,8 +2,6 @@
 .DS_Store
 **/__pycache__
 .env
-trials_*.jsonl
-trials_*.html
 .playwright-cli/
 .ait/
 .ant/
