@@ -58,6 +58,10 @@ than simple, it's the wrong change.
 - `trials_*.jsonl` / `trials_*.html` are gitignored run artefacts. A
   1,440-trial reference dataset (`trials_bigrun.jsonl`, July 2026, three
   gpt-5.6 models) lives locally — see ant `llmb-XKtxA` for its headlines.
+  A second, committed one (`examples/trials_openrouter.jsonl`, July 2026,
+  four open-weight models via OpenRouter) — see ant `llmb-sXVTv` for its
+  headlines and the cost/reasoning-token lessons before the next
+  OpenRouter run.
 - The owner runs all git write commands themselves. Hand over the exact
   commands; never commit, push, or branch.
 - British English in docs and output. No real names in durable artefacts.
