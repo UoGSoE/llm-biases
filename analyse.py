@@ -46,6 +46,36 @@ def chosen_option(trial: Trial, verdict: str) -> str:
     return trial.first_option if verdict == "first" else trial.second_option
 
 
+# A default favourite is only called when the split is this lopsided over
+# at least this many decided answers - same honesty-over-drama rule as the
+# tendency threshold.
+FAVOURITE_THRESHOLD = 0.8
+FAVOURITE_MIN_DECIDED = 5
+
+
+@dataclass
+class PairPick:
+    """How one pair's no-preference answers split, winner first."""
+
+    pair_id: str
+    winner: str
+    loser: str
+    winner_picks: int
+    loser_picks: int
+    decided_n: int
+
+    @property
+    def winner_share(self) -> float:
+        return self.winner_picks / self.decided_n if self.decided_n else 0.0
+
+    @property
+    def is_strong(self) -> bool:
+        return (
+            self.decided_n >= FAVOURITE_MIN_DECIDED
+            and self.winner_share >= FAVOURITE_THRESHOLD
+        )
+
+
 @dataclass
 class GroupSummary:
     """Computed stats for one (model, eval) group. The single source of
@@ -62,6 +92,7 @@ class GroupSummary:
     baseline_decided_n: int
     baseline_first_rate: float | None
     other_rate: float
+    default_picks: list[PairPick]
 
 
 def summarise(trials: list[Trial]) -> GroupSummary:
@@ -86,6 +117,16 @@ def summarise(trials: list[Trial]) -> GroupSummary:
         firsts = sum(1 for _, v in baseline_decided if v == "first")
         baseline_first_rate = firsts / len(baseline_decided)
 
+    picks_by_pair: dict[str, dict[str, int]] = {}
+    for t, v in baseline_decided:
+        counts = picks_by_pair.setdefault(t.pair_id, {t.first_option: 0, t.second_option: 0})
+        counts[chosen_option(t, v)] = counts.get(chosen_option(t, v), 0) + 1
+    default_picks = []
+    for pair_id, counts in picks_by_pair.items():
+        (winner, w), (loser, l) = sorted(counts.items(), key=lambda kv: -kv[1])[:2]
+        default_picks.append(PairPick(pair_id, winner, loser, w, l, w + l))
+    default_picks.sort(key=lambda p: (-p.winner_share, -p.decided_n, p.pair_id))
+
     other_rate = (
         sum(1 for _, v in verdicts if v == "other") / len(ok) if ok else 0.0
     )
@@ -100,6 +141,7 @@ def summarise(trials: list[Trial]) -> GroupSummary:
         baseline_decided_n=len(baseline_decided),
         baseline_first_rate=baseline_first_rate,
         other_rate=other_rate,
+        default_picks=default_picks,
     )
 
 
@@ -141,6 +183,17 @@ def tendency_sentences(gs: GroupSummary) -> list[str]:
         lines.append(
             f"Not enough decided no-preference answers to call a position "
             f"tendency (n={gs.baseline_decided_n})."
+        )
+
+    strong = [p for p in gs.default_picks if p.is_strong]
+    if strong:
+        tops = ", ".join(
+            f"{p.winner} over {p.loser} ({p.winner_picks}/{p.decided_n})"
+            for p in strong[:3]
+        )
+        more = f" and {len(strong) - 3} more" if len(strong) > 3 else ""
+        lines.append(
+            f"Has default favourites when no preference is expressed: {tops}{more}."
         )
 
     if gs.trials - gs.errors > 0 and gs.other_rate >= 0.2:

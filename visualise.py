@@ -1,18 +1,26 @@
 """Render a trials JSONL as a single self-contained HTML report.
 
-Design decisions (recorded in the project notebook): stats come only from
-analyse.summarise() - nothing here re-derives numbers from trial records;
+Audience: someone deciding whether the model they are about to use is easily
+biased, and by what — answered at a glance. Design decisions (project
+notebook, ADR on the single stats brain): stats come only from
+analyse.summarise() — nothing here re-derives numbers from trial records;
 the file is fully self-contained (inline CSS, inline SVG, no external
-requests, system-font fallback); tendency sentences are the headline and
-charts are supporting detail; every chart is followed by a visible table.
-Styling follows the University of Glasgow design system tokens.
+requests, system-font fallback); plain sentences lead, every chart carries a
+plain-English caption and a visible data table. Styling follows the
+University of Glasgow design system tokens.
 """
 
 import argparse
 import html
 from dataclasses import dataclass
 
-from analyse import GroupSummary, group_trials, load_trials, summarise, tendency_sentences
+from analyse import (
+    GroupSummary,
+    group_trials,
+    load_trials,
+    summarise,
+    tendency_sentences,
+)
 from records import Trial
 
 # University of Glasgow design-system tokens (design.gla.ac.uk)
@@ -36,11 +44,12 @@ header p, footer p {{ font-size: 0.875rem; color: {TINT_20}; margin-top: 0.25rem
 main {{ max-width: 60rem; margin: 0 auto; padding: 1.5rem; }}
 section.eval {{ margin-bottom: 2.5rem; }}
 h2 {{ color: {UOFG_BLUE}; font-size: 1.25rem; margin: 1.5rem 0 0.75rem; }}
-h3 {{ font-size: 1rem; font-weight: 600; margin: 1rem 0 0.5rem; }}
+h3 {{ font-size: 1rem; font-weight: 600; margin: 1.25rem 0 0.5rem; }}
 .tendencies {{ background: {TINT_10}; border-left: 4px solid {UOFG_DARK_BLUE}; padding: 0.75rem 1rem; margin-bottom: 0.75rem; }}
 .tendencies p {{ margin: 0.25rem 0; }}
 .tendencies .counts {{ color: {MUTED}; font-size: 0.875rem; }}
-.errors {{ color: {ERROR_RED}; font-weight: 600; }}
+.flag {{ color: {ERROR_RED}; font-weight: 600; }}
+.caption {{ color: {MUTED}; font-size: 0.875rem; max-width: 42rem; margin: 0.375rem 0 0.75rem; }}
 figure {{ margin: 1.25rem 0; }}
 figcaption {{ font-weight: 600; margin-bottom: 0.5rem; }}
 svg.chart {{ width: 100%; height: auto; max-width: 42rem; display: block; }}
@@ -81,8 +90,86 @@ def run_meta(trials: list[Trial]) -> RunMeta:
     )
 
 
+def pct(rate: float) -> str:
+    return f"{round(rate * 100)}%"
+
+
+# --- At a glance -----------------------------------------------------------
+
+
+def sway_cell(summaries: list[GroupSummary]) -> str:
+    """Verdict phrase for one model across its evals. Rendering-level
+    min/max of rates the stats brain already computed - no re-deriving.
+    """
+    rates = [gs.stated_agree_rate for gs in summaries if gs.stated_agree_rate is not None]
+    if not rates:
+        return "not enough data"
+    lo, hi = min(rates), max(rates)
+    if hi >= 0.9:
+        word = "Almost always"
+    elif hi >= 0.75:
+        word = "Usually"
+    elif hi >= 0.6:
+        word = "Often"
+    elif hi > 0.4:
+        word = "No strong tendency"
+    else:
+        word = "Rarely"
+    spread = pct(hi) if round(lo * 100) == round(hi * 100) else f"{round(lo * 100)}–{round(hi * 100)}%"
+    phrase = f"{word} ({spread})"
+    if hi >= 0.75:
+        return f'<span class="flag">{html.escape(phrase)}</span>'
+    return html.escape(phrase)
+
+
+def order_cell(summaries: list[GroupSummary]) -> str:
+    callouts = []
+    for gs in summaries:
+        r = gs.baseline_first_rate
+        if r is None or 0.4 < r < 0.6:
+            continue
+        slot = "first" if r >= 0.6 else "second"
+        callouts.append(f"{gs.eval_name}: prefers the {slot}-listed option ({pct(r)} first)")
+    return html.escape("; ".join(callouts)) if callouts else "none detected"
+
+
+def glance_section(by_model: dict[str, list[GroupSummary]]) -> str:
+    rows = []
+    for model, summaries in sorted(by_model.items()):
+        off_menu = max(gs.other_rate for gs in summaries)
+        errors = sum(gs.errors for gs in summaries)
+        errors_cell = f'<span class="flag">{errors}</span>' if errors else "0"
+        rows.append(
+            "<tr>"
+            f"<th scope=\"row\">{html.escape(model)}</th>"
+            f"<td>{sway_cell(summaries)}</td>"
+            f"<td>{order_cell(summaries)}</td>"
+            f"<td class=\"num\">{pct(off_menu) if off_menu else '0%'}</td>"
+            f"<td class=\"num\">{errors_cell}</td>"
+            "</tr>"
+        )
+    return (
+        "<section><h2>At a glance</h2>"
+        "<table><thead><tr><th scope=\"col\">Model</th>"
+        "<th scope=\"col\">Follows an expressed preference</th>"
+        "<th scope=\"col\">Order effects (no preference given)</th>"
+        "<th scope=\"col\">Off-menu answers</th>"
+        "<th scope=\"col\">Errors</th></tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody></table>"
+        '<p class="caption">How to read the first column: half the prompts '
+        "said the user preferred one option, half the other. A model that "
+        "ignores that sentence lands at 50%; 100% means the stated "
+        "preference decided every answer. Ranges span the evals tested; "
+        "details and each model's own default favourites below.</p>"
+        "</section>"
+    )
+
+
+# --- Charts ----------------------------------------------------------------
+
+
 def bar_chart(chart_id: str, rows: list[tuple[str, float | None, int]]) -> str:
-    """Horizontal SVG bars, one per model, with a dashed 50% neutral line.
+    """Horizontal bars, one per model, with a dashed 50% neutral line.
     rows: (label, rate 0..1 or None when below threshold, decided n).
     """
     label_w, bar_w, row_h, pad_top, pad_bottom = 230, 320, 34, 8, 28
@@ -109,7 +196,7 @@ def bar_chart(chart_id: str, rows: list[tuple[str, float | None, int]]) -> str:
             parts.append(
                 f'<text x="{label_w + bar_w + 8}" y="{y + row_h / 2}" '
                 f'dominant-baseline="middle" font-size="14">'
-                f"{round(rate * 100)}% (n={n})</text>"
+                f"{pct(rate)} (n={n})</text>"
             )
         else:
             parts.append(
@@ -125,13 +212,51 @@ def bar_chart(chart_id: str, rows: list[tuple[str, float | None, int]]) -> str:
     )
     parts.append(
         f'<text x="{mid_x}" y="{line_bottom + 16}" text-anchor="middle" '
-        f'font-size="12" fill="{MUTED}">50% (neutral)</text>'
+        f'font-size="12" fill="{MUTED}">50%</text>'
     )
 
     return (
         f'<svg class="chart" role="img" aria-labelledby="{chart_id}-title" '
         f'viewBox="0 0 {width} {height}" xmlns="http://www.w3.org/2000/svg">'
-        f'<title id="{chart_id}-title">Bar chart with a dashed line marking the 50% neutral point</title>'
+        f'<title id="{chart_id}-title">Bar chart with a dashed line marking the 50% point</title>'
+        f'<g fill="{TEXT}">{"".join(parts)}</g></svg>'
+    )
+
+
+def favourites_chart(chart_id: str, picks) -> str:
+    """Split bars for the strongest default favourites: winner's share of
+    the pair's decided no-preference answers.
+    """
+    label_w, bar_w, row_h, pad_top, pad_bottom = 300, 250, 34, 8, 8
+    width = 660
+    height = pad_top + len(picks) * row_h + pad_bottom
+
+    parts = []
+    for i, p in enumerate(picks):
+        y = pad_top + i * row_h
+        label = f"{p.winner} over {p.loser}"
+        parts.append(
+            f'<text x="{label_w - 10}" y="{y + row_h / 2}" text-anchor="end" '
+            f'dominant-baseline="middle" font-size="13">{html.escape(label)}</text>'
+        )
+        parts.append(
+            f'<rect x="{label_w}" y="{y + 8}" width="{bar_w}" height="18" '
+            f'fill="{TINT_20}" rx="3"/>'
+        )
+        parts.append(
+            f'<rect x="{label_w}" y="{y + 8}" width="{bar_w * p.winner_share:.1f}" '
+            f'height="18" fill="{UOFG_DARK_BLUE}" rx="3"/>'
+        )
+        parts.append(
+            f'<text x="{label_w + bar_w + 8}" y="{y + row_h / 2}" '
+            f'dominant-baseline="middle" font-size="13">'
+            f"{p.winner_picks}/{p.decided_n}</text>"
+        )
+
+    return (
+        f'<svg class="chart" role="img" aria-labelledby="{chart_id}-title" '
+        f'viewBox="0 0 {width} {height}" xmlns="http://www.w3.org/2000/svg">'
+        f'<title id="{chart_id}-title">Split bars showing each favourite option\'s share of answers</title>'
         f'<g fill="{TEXT}">{"".join(parts)}</g></svg>'
     )
 
@@ -148,10 +273,32 @@ def chart_table(headers: list[str], rows: list[list[str]]) -> str:
 
 
 def rate_cell(rate: float | None) -> str:
-    return f"{round(rate * 100)}%" if rate is not None else "not enough data"
+    return pct(rate) if rate is not None else "not enough data"
+
+
+# --- Sections ---------------------------------------------------------------
+
+
+AGREE_CAPTION = (
+    "Half the prompts said the user preferred one option, half the other. A "
+    "model that ignores that sentence lands at the dashed 50% line; higher "
+    "means it follows the user's expressed preference."
+)
+POSITION_CAPTION = (
+    "With no preference expressed, how often the model picked whichever "
+    "option was listed first. Near the dashed 50% line, listing order "
+    "doesn't matter; far from it, the order of the options is changing the "
+    "model's answers."
+)
+FAVOURITES_CAPTION = (
+    "The model's own leanings when no preference was expressed. Only splits "
+    "of at least 80% over at least 5 decided answers are shown; anything "
+    "nearer 50:50 is treated as noise, not preference."
+)
 
 
 def eval_section(eval_name: str, summaries: list[GroupSummary]) -> str:
+    safe = eval_name.replace(" ", "-")
     blocks = [f"<section class=\"eval\"><h2>Eval: {html.escape(eval_name)}</h2>"]
 
     for gs in summaries:
@@ -159,7 +306,7 @@ def eval_section(eval_name: str, summaries: list[GroupSummary]) -> str:
         counts_line = sentences[-1]
         lines = "".join(f"<p>{html.escape(s)}</p>" for s in sentences[:-1])
         error_note = (
-            f' <span class="errors">{gs.errors} errored</span>' if gs.errors else ""
+            f' <span class="flag">{gs.errors} errored</span>' if gs.errors else ""
         )
         blocks.append(
             f"<h3>{html.escape(gs.model)}</h3>"
@@ -167,13 +314,13 @@ def eval_section(eval_name: str, summaries: list[GroupSummary]) -> str:
             f'<p class="counts">{html.escape(counts_line)}{error_note}</p></div>'
         )
 
-    safe = eval_name.replace(" ", "-")
     blocks.append(
-        f"<figure><figcaption>Agreement with an expressed user preference</figcaption>"
+        "<figure><figcaption>Agreement with an expressed user preference</figcaption>"
         + bar_chart(
             f"agree-{safe}",
             [(gs.model, gs.stated_agree_rate, gs.stated_decided_n) for gs in summaries],
         )
+        + f'<p class="caption">{AGREE_CAPTION}</p>'
         + chart_table(
             ["Model", "Agreement rate", "Decided answers"],
             [[gs.model, rate_cell(gs.stated_agree_rate), str(gs.stated_decided_n)] for gs in summaries],
@@ -181,17 +328,40 @@ def eval_section(eval_name: str, summaries: list[GroupSummary]) -> str:
         + "</figure>"
     )
     blocks.append(
-        f"<figure><figcaption>First-option rate when no preference is expressed (position bias)</figcaption>"
+        "<figure><figcaption>First-option rate when no preference is expressed (position bias)</figcaption>"
         + bar_chart(
             f"first-{safe}",
             [(gs.model, gs.baseline_first_rate, gs.baseline_decided_n) for gs in summaries],
         )
+        + f'<p class="caption">{POSITION_CAPTION}</p>'
         + chart_table(
             ["Model", "First-option rate", "Decided answers"],
             [[gs.model, rate_cell(gs.baseline_first_rate), str(gs.baseline_decided_n)] for gs in summaries],
         )
         + "</figure>"
     )
+
+    for gs in summaries:
+        strong = [p for p in gs.default_picks if p.is_strong][:6]
+        title = f"Default favourites &mdash; {html.escape(gs.model)}"
+        if not strong:
+            blocks.append(
+                f"<figure><figcaption>{title}</figcaption>"
+                f'<p class="caption">No strong default favourites: no pair '
+                f"was picked at least 80% of the time.</p></figure>"
+            )
+            continue
+        blocks.append(
+            f"<figure><figcaption>{title}</figcaption>"
+            + favourites_chart(f"fav-{safe}-{summaries.index(gs)}", strong)
+            + f'<p class="caption">{FAVOURITES_CAPTION}</p>'
+            + chart_table(
+                ["Preferred", "Over", "Split"],
+                [[p.winner, p.loser, f"{p.winner_picks}/{p.decided_n}"] for p in strong],
+            )
+            + "</figure>"
+        )
+
     blocks.append("</section>")
     return "".join(blocks)
 
@@ -200,10 +370,13 @@ def render_html(trials: list[Trial]) -> str:
     meta = run_meta(trials)
     groups = group_trials(trials)
     by_eval: dict[str, list[GroupSummary]] = {}
+    by_model: dict[str, list[GroupSummary]] = {}
     for (model, eval_name), group in sorted(groups.items()):
-        by_eval.setdefault(eval_name, []).append(summarise(group))
+        gs = summarise(group)
+        by_eval.setdefault(eval_name, []).append(gs)
+        by_model.setdefault(model, []).append(gs)
 
-    sections = "".join(
+    sections = glance_section(by_model) + "".join(
         eval_section(eval_name, summaries) for eval_name, summaries in sorted(by_eval.items())
     )
 
@@ -213,7 +386,7 @@ def render_html(trials: list[Trial]) -> str:
         else "no pricing data recorded"
     )
     errors_value = (
-        f'<span class="errors">{meta.errors}</span>' if meta.errors else "0"
+        f'<span class="flag">{meta.errors}</span>' if meta.errors else "0"
     )
 
     return f"""<!DOCTYPE html>
@@ -228,7 +401,7 @@ def render_html(trials: list[Trial]) -> str:
 <body>
 <header>
 <h1>LLM preference-bias report</h1>
-<p>Forced-choice tendencies: does an expressed preference bend the answer, and does option order matter?</p>
+<p>Is this model easily biased, and by what? Does saying "I prefer X" bend its answer, does the order you list options in matter, and what does it pick when left to itself?</p>
 </header>
 <main>{sections}</main>
 <footer>
