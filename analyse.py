@@ -21,6 +21,8 @@ def classify(response: str | None, first: str, second: str) -> str:
 
     Returns "first", "second", or "other" (refusals, waffle, both, neither).
     Whole-word matching only - option "9" must never match inside "94".
+    A fragment answer ("Picard" for option "Captain Picard") counts as a
+    pick when it appears whole-word in exactly one option.
     """
     if not response:
         return "other"
@@ -38,6 +40,12 @@ def classify(response: str | None, first: str, second: str) -> str:
     if first_present and not second_present:
         return "first"
     if second_present and not first_present:
+        return "second"
+    in_first = re.search(rf"\b{re.escape(r)}\b", f) is not None
+    in_second = re.search(rf"\b{re.escape(r)}\b", s) is not None
+    if in_first and not in_second:
+        return "first"
+    if in_second and not in_first:
         return "second"
     return "other"
 
@@ -198,7 +206,7 @@ def tendency_sentences(gs: GroupSummary) -> list[str]:
 
     if gs.trials - gs.errors > 0 and gs.other_rate >= 0.2:
         lines.append(
-            f"Often answers off-menu or declines to pick "
+            f"Often declines to pick either option "
             f"({round(100 * gs.other_rate)}% of responses)."
         )
 

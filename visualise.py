@@ -1,4 +1,4 @@
-"""Render a trials JSONL as a single self-contained HTML report.
+"""Render one or more trials JSONLs as a single self-contained HTML report.
 
 Audience: someone deciding whether the model they are about to use is easily
 biased, and by what — answered at a glance. Design decisions (project
@@ -32,6 +32,7 @@ TINT_10 = "#E6E7EE"         # section backgrounds
 TEXT = "#323232"
 MUTED = "#757575"
 ERROR_RED = "#D4351C"
+HIGHLIGHT_YELLOW = "#FFDD00"
 
 FONT_STACK = '"Noto Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif'
 
@@ -54,6 +55,8 @@ figure {{ margin: 1.25rem 0; }}
 figcaption {{ font-weight: 600; margin-bottom: 0.5rem; }}
 svg.chart {{ width: 100%; height: auto; max-width: 42rem; display: block; }}
 table {{ border-collapse: collapse; margin: 0.5rem 0 1rem; font-size: 0.875rem; }}
+details {{ margin: 0.5rem 0 1rem; }}
+summary {{ cursor: pointer; color: {MUTED}; font-size: 0.875rem; }}
 th, td {{ text-align: left; padding: 0.375rem 0.75rem; border-bottom: 1px solid {TINT_20}; }}
 th {{ color: {UOFG_BLUE}; }}
 td.num {{ font-variant-numeric: tabular-nums; }}
@@ -94,6 +97,44 @@ def pct(rate: float) -> str:
     return f"{round(rate * 100)}%"
 
 
+def display_model(model: str) -> str:
+    """OpenRouter is routing, not provenance — readers care about the
+    provider/model underneath. Records keep the full litellm id.
+    """
+    return model.removeprefix("openrouter/")
+
+
+def pull(rate: float) -> float:
+    """Distance from the neutral 50% line — how far something moved the
+    model, in either direction. Sort key and colour band share it.
+    """
+    return abs(rate - 0.5)
+
+
+def band_colour(rate: float) -> str:
+    # Same boundaries as the words: 10 points off neutral is where the
+    # tendency sentences start calling a lean (60/40), 25 is the flag
+    # zone (75/25). Blue/yellow/red stays legible to colour-blind readers,
+    # and the printed numbers carry the data regardless.
+    if pull(rate) >= 0.25:
+        return ERROR_RED
+    if pull(rate) >= 0.10:
+        return HIGHLIGHT_YELLOW
+    return UOFG_DARK_BLUE
+
+
+def by_least_swayed(summaries: list[GroupSummary], rate_of) -> list[GroupSummary]:
+    """Chart order: least-swayed model first, not-enough-data rows last."""
+    return sorted(
+        summaries,
+        key=lambda gs: (
+            rate_of(gs) is None,
+            pull(rate_of(gs)) if rate_of(gs) is not None else 0.0,
+            display_model(gs.model),
+        ),
+    )
+
+
 # --- At a glance -----------------------------------------------------------
 
 
@@ -101,11 +142,17 @@ def sway_cell(summaries: list[GroupSummary]) -> str:
     """Verdict phrase for one model across its evals. Rendering-level
     min/max of rates the stats brain already computed - no re-deriving.
     """
-    rates = [gs.stated_agree_rate for gs in summaries if gs.stated_agree_rate is not None]
-    if not rates:
+    rated = [gs for gs in summaries if gs.stated_agree_rate is not None]
+    if not rated:
         return "not enough data"
+    rates = [gs.stated_agree_rate for gs in rated]
     lo, hi = min(rates), max(rates)
-    if hi >= 0.9:
+    # A model can follow preferences on one eval and pick against them on
+    # another; a verdict from hi alone would bury the contrarian half.
+    contrarian = [gs.eval_name for gs in rated if gs.stated_agree_rate <= 0.4]
+    if contrarian and hi > 0.4:
+        word = f"Mixed — contrarian on {', '.join(contrarian)}"
+    elif hi >= 0.9:
         word = "Almost always"
     elif hi >= 0.75:
         word = "Usually"
@@ -135,16 +182,16 @@ def order_cell(summaries: list[GroupSummary]) -> str:
 
 def glance_section(by_model: dict[str, list[GroupSummary]]) -> str:
     rows = []
-    for model, summaries in sorted(by_model.items()):
-        off_menu = max(gs.other_rate for gs in summaries)
+    for model, summaries in sorted(by_model.items(), key=lambda kv: display_model(kv[0])):
+        undecided = max(gs.other_rate for gs in summaries)
         errors = sum(gs.errors for gs in summaries)
         errors_cell = f'<span class="flag">{errors}</span>' if errors else "0"
         rows.append(
             "<tr>"
-            f"<th scope=\"row\">{html.escape(model)}</th>"
+            f"<th scope=\"row\">{html.escape(display_model(model))}</th>"
             f"<td>{sway_cell(summaries)}</td>"
             f"<td>{order_cell(summaries)}</td>"
-            f"<td class=\"num\">{pct(off_menu) if off_menu else '0%'}</td>"
+            f"<td class=\"num\">{pct(undecided) if undecided else '0%'}</td>"
             f"<td class=\"num\">{errors_cell}</td>"
             "</tr>"
         )
@@ -153,14 +200,16 @@ def glance_section(by_model: dict[str, list[GroupSummary]]) -> str:
         "<table><thead><tr><th scope=\"col\">Model</th>"
         "<th scope=\"col\">Follows an expressed preference</th>"
         "<th scope=\"col\">Order effects (no preference given)</th>"
-        "<th scope=\"col\">Off-menu answers</th>"
+        "<th scope=\"col\">Didn't pick either option</th>"
         "<th scope=\"col\">Errors</th></tr></thead>"
         f"<tbody>{''.join(rows)}</tbody></table>"
         '<p class="caption">How to read the first column: half the prompts '
         "said the user preferred one option, half the other. A model that "
         "ignores that sentence lands at 50%; 100% means the stated "
         "preference decided every answer. Ranges span the evals tested; "
-        "details and each model's own default favourites below.</p>"
+        "details and each model's own default favourites below. "
+        "&ldquo;Didn't pick either option&rdquo; counts refusals and "
+        "answers that named both options or neither.</p>"
         "</section>"
     )
 
@@ -191,7 +240,7 @@ def bar_chart(chart_id: str, rows: list[tuple[str, float | None, int]]) -> str:
         if rate is not None:
             parts.append(
                 f'<rect x="{label_w}" y="{y + 8}" width="{bar_w * rate:.1f}" height="18" '
-                f'fill="{UOFG_DARK_BLUE}" rx="3"/>'
+                f'fill="{band_colour(rate)}" rx="3"/>'
             )
             parts.append(
                 f'<text x="{label_w + bar_w + 8}" y="{y + row_h / 2}" '
@@ -276,6 +325,15 @@ def rate_cell(rate: float | None) -> str:
     return pct(rate) if rate is not None else "not enough data"
 
 
+def chart_data(table: str, brief: bool) -> str:
+    """Brief mode folds the chart's data table away rather than dropping
+    it — the numbers stay reachable for screen readers and the curious.
+    """
+    if not brief:
+        return table
+    return f"<details><summary>Data table</summary>{table}</details>"
+
+
 # --- Sections ---------------------------------------------------------------
 
 
@@ -295,78 +353,87 @@ FAVOURITES_CAPTION = (
     "of at least 80% over at least 5 decided answers are shown; anything "
     "nearer 50:50 is treated as noise, not preference."
 )
+BAND_LEGEND = (
+    "Bars are ordered least-swayed first and coloured by distance from the "
+    "50% line: blue within 10 points, yellow within 25, red beyond."
+)
 
 
-def eval_section(eval_name: str, summaries: list[GroupSummary]) -> str:
+def eval_section(eval_name: str, summaries: list[GroupSummary], brief: bool = False) -> str:
     safe = eval_name.replace(" ", "-")
     blocks = [f"<section class=\"eval\"><h2>Eval: {html.escape(eval_name)}</h2>"]
 
-    for gs in summaries:
-        sentences = tendency_sentences(gs)
-        counts_line = sentences[-1]
-        lines = "".join(f"<p>{html.escape(s)}</p>" for s in sentences[:-1])
-        error_note = (
-            f' <span class="flag">{gs.errors} errored</span>' if gs.errors else ""
-        )
-        blocks.append(
-            f"<h3>{html.escape(gs.model)}</h3>"
-            f'<div class="tendencies">{lines}'
-            f'<p class="counts">{html.escape(counts_line)}{error_note}</p></div>'
-        )
+    named = sorted(summaries, key=lambda gs: display_model(gs.model))
+    if not brief:
+        for gs in named:
+            sentences = tendency_sentences(gs)
+            counts_line = sentences[-1]
+            lines = "".join(f"<p>{html.escape(s)}</p>" for s in sentences[:-1])
+            error_note = (
+                f' <span class="flag">{gs.errors} errored</span>' if gs.errors else ""
+            )
+            blocks.append(
+                f"<h3>{html.escape(display_model(gs.model))}</h3>"
+                f'<div class="tendencies">{lines}'
+                f'<p class="counts">{html.escape(counts_line)}{error_note}</p></div>'
+            )
 
+    agree_order = by_least_swayed(summaries, lambda gs: gs.stated_agree_rate)
     blocks.append(
         "<figure><figcaption>Agreement with an expressed user preference</figcaption>"
         + bar_chart(
             f"agree-{safe}",
-            [(gs.model, gs.stated_agree_rate, gs.stated_decided_n) for gs in summaries],
+            [(display_model(gs.model), gs.stated_agree_rate, gs.stated_decided_n) for gs in agree_order],
         )
-        + f'<p class="caption">{AGREE_CAPTION}</p>'
-        + chart_table(
+        + f'<p class="caption">{AGREE_CAPTION} {BAND_LEGEND}</p>'
+        + chart_data(chart_table(
             ["Model", "Agreement rate", "Decided answers"],
-            [[gs.model, rate_cell(gs.stated_agree_rate), str(gs.stated_decided_n)] for gs in summaries],
-        )
+            [[display_model(gs.model), rate_cell(gs.stated_agree_rate), str(gs.stated_decided_n)] for gs in agree_order],
+        ), brief)
         + "</figure>"
     )
+    first_order = by_least_swayed(summaries, lambda gs: gs.baseline_first_rate)
     blocks.append(
         "<figure><figcaption>First-option rate when no preference is expressed (position bias)</figcaption>"
         + bar_chart(
             f"first-{safe}",
-            [(gs.model, gs.baseline_first_rate, gs.baseline_decided_n) for gs in summaries],
+            [(display_model(gs.model), gs.baseline_first_rate, gs.baseline_decided_n) for gs in first_order],
         )
-        + f'<p class="caption">{POSITION_CAPTION}</p>'
-        + chart_table(
+        + f'<p class="caption">{POSITION_CAPTION} {BAND_LEGEND}</p>'
+        + chart_data(chart_table(
             ["Model", "First-option rate", "Decided answers"],
-            [[gs.model, rate_cell(gs.baseline_first_rate), str(gs.baseline_decided_n)] for gs in summaries],
-        )
+            [[display_model(gs.model), rate_cell(gs.baseline_first_rate), str(gs.baseline_decided_n)] for gs in first_order],
+        ), brief)
         + "</figure>"
     )
 
-    for gs in summaries:
-        strong = [p for p in gs.default_picks if p.is_strong][:6]
-        title = f"Default favourites &mdash; {html.escape(gs.model)}"
-        if not strong:
+    if not brief:
+        for index, gs in enumerate(named):
+            strong = [p for p in gs.default_picks if p.is_strong][:6]
+            title = f"Default favourites &mdash; {html.escape(display_model(gs.model))}"
+            if not strong:
+                blocks.append(
+                    f"<figure><figcaption>{title}</figcaption>"
+                    f'<p class="caption">No strong default favourites: no pair '
+                    f"was picked at least 80% of the time.</p></figure>"
+                )
+                continue
             blocks.append(
                 f"<figure><figcaption>{title}</figcaption>"
-                f'<p class="caption">No strong default favourites: no pair '
-                f"was picked at least 80% of the time.</p></figure>"
+                + favourites_chart(f"fav-{safe}-{index}", strong)
+                + f'<p class="caption">{FAVOURITES_CAPTION}</p>'
+                + chart_table(
+                    ["Preferred", "Over", "Split"],
+                    [[p.winner, p.loser, f"{p.winner_picks}/{p.decided_n}"] for p in strong],
+                )
+                + "</figure>"
             )
-            continue
-        blocks.append(
-            f"<figure><figcaption>{title}</figcaption>"
-            + favourites_chart(f"fav-{safe}-{summaries.index(gs)}", strong)
-            + f'<p class="caption">{FAVOURITES_CAPTION}</p>'
-            + chart_table(
-                ["Preferred", "Over", "Split"],
-                [[p.winner, p.loser, f"{p.winner_picks}/{p.decided_n}"] for p in strong],
-            )
-            + "</figure>"
-        )
 
     blocks.append("</section>")
     return "".join(blocks)
 
 
-def render_html(trials: list[Trial]) -> str:
+def render_html(trials: list[Trial], brief: bool = False) -> str:
     meta = run_meta(trials)
     groups = group_trials(trials)
     by_eval: dict[str, list[GroupSummary]] = {}
@@ -377,7 +444,13 @@ def render_html(trials: list[Trial]) -> str:
         by_model.setdefault(model, []).append(gs)
 
     sections = glance_section(by_model) + "".join(
-        eval_section(eval_name, summaries) for eval_name, summaries in sorted(by_eval.items())
+        eval_section(eval_name, summaries, brief) for eval_name, summaries in sorted(by_eval.items())
+    )
+    brief_note = (
+        "<p>Summary view: tendencies at a glance. The full report adds each "
+        "model's detailed sentences and default favourites.</p>"
+        if brief
+        else ""
     )
 
     cost_line = (
@@ -402,11 +475,12 @@ def render_html(trials: list[Trial]) -> str:
 <header>
 <h1>LLM preference-bias report</h1>
 <p>Is this model easily biased, and by what? Does saying "I prefer X" bend its answer, does the order you list options in matter, and what does it pick when left to itself?</p>
+{brief_note}
 </header>
 <main>{sections}</main>
 <footer>
 <dl>
-<dt>Models</dt><dd>{html.escape(", ".join(meta.models))}</dd>
+<dt>Models</dt><dd>{html.escape(", ".join(sorted(display_model(m) for m in meta.models)))}</dd>
 <dt>Evals</dt><dd>{html.escape(", ".join(meta.evals))}</dd>
 <dt>Trials</dt><dd>{meta.trials} ({errors_value} errored)</dd>
 <dt>Collected</dt><dd>{html.escape(meta.first_seen)} &ndash; {html.escape(meta.last_seen)} UTC</dd>
@@ -419,22 +493,29 @@ def render_html(trials: list[Trial]) -> str:
 """
 
 
-def write_report(trials: list[Trial], output_path: str) -> str:
+def write_report(trials: list[Trial], output_path: str, brief: bool = False) -> str:
     with open(output_path, "w") as f:
-        f.write(render_html(trials))
+        f.write(render_html(trials, brief))
     return output_path
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Render a trials JSONL as a self-contained HTML report")
-    parser.add_argument("trials_file", help="JSONL written by main.py")
+    parser = argparse.ArgumentParser(description="Render one or more trials JSONLs as a single self-contained HTML report")
+    parser.add_argument("trials_files", nargs="+", help="JSONL file(s) written by main.py")
     parser.add_argument("-o", "--output", help="output path (default: input with .html suffix)")
+    parser.add_argument("--brief", action="store_true",
+                        help="summary view: glance table and comparison charts only")
     args = parser.parse_args()
 
-    output = args.output or (
-        args.trials_file.removesuffix(".jsonl") + ".html"
-    )
-    write_report(load_trials(args.trials_file), output)
+    if args.output:
+        output = args.output
+    elif len(args.trials_files) == 1:
+        output = args.trials_files[0].removesuffix(".jsonl") + ".html"
+    else:
+        parser.error("multiple input files: choose the destination with -o/--output")
+
+    trials = [t for path in args.trials_files for t in load_trials(path)]
+    write_report(trials, output, args.brief)
     print(f"Report written to {output}")
 
 

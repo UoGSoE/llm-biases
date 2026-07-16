@@ -41,3 +41,15 @@ def test_non_latin_script_exact_match():
 
 def test_multi_word_option_in_sentence():
     assert classify("Darth Vader, definitely", "Darth Vader", "Dave Prowse") == "first"
+
+
+def test_fragment_of_one_option_is_a_pick():
+    assert classify("Picard.", "Captain Kirk", "Captain Picard") == "second"
+
+
+def test_fragment_shared_by_both_options_is_other():
+    assert classify("Captain", "Captain Kirk", "Captain Picard") == "other"
+
+
+def test_fragment_must_be_whole_word_not_digit_prefix():
+    assert classify("9", "94", "49") == "other"
