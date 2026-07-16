@@ -123,13 +123,13 @@ def band_colour(rate: float) -> str:
     return UOFG_DARK_BLUE
 
 
-def by_least_swayed(summaries: list[GroupSummary], rate_of) -> list[GroupSummary]:
-    """Chart order: least-swayed model first, not-enough-data rows last."""
+def by_rate(summaries: list[GroupSummary], rate_of) -> list[GroupSummary]:
+    """Chart order: plain ascending by rate, not-enough-data rows last."""
     return sorted(
         summaries,
         key=lambda gs: (
             rate_of(gs) is None,
-            pull(rate_of(gs)) if rate_of(gs) is not None else 0.0,
+            rate_of(gs) if rate_of(gs) is not None else 0.0,
             display_model(gs.model),
         ),
     )
@@ -175,8 +175,10 @@ def order_cell(summaries: list[GroupSummary]) -> str:
         r = gs.baseline_first_rate
         if r is None or 0.4 < r < 0.6:
             continue
-        slot = "first" if r >= 0.6 else "second"
-        callouts.append(f"{gs.eval_name}: prefers the {slot}-listed option ({pct(r)} first)")
+        # Quote the rate in the direction of the lean, so the number backs
+        # the claim without the reader doing 100-x in their head.
+        slot, rate = ("first", r) if r >= 0.6 else ("second", 1 - r)
+        callouts.append(f"{gs.eval_name}: picks the {slot}-listed option {pct(rate)} of the time")
     return html.escape("; ".join(callouts)) if callouts else "none detected"
 
 
@@ -272,6 +274,79 @@ def bar_chart(chart_id: str, rows: list[tuple[str, float | None, int]]) -> str:
     )
 
 
+def diverging_chart(chart_id: str, rows: list[tuple[str, float | None, int]]) -> str:
+    """Horizontal bars growing out from the 50% centre line: left when the
+    model favours the second-listed option, right when it favours the
+    first. Bar length shows the size of the lean, and the annotation quotes
+    the rate in the direction of the lean — the same number the glance
+    table and tendency sentences use, so nothing needs converting.
+    rows: (label, first-option rate 0..1 or None when below threshold, n).
+    """
+    label_w, bar_w, row_h, pad_top, pad_bottom = 230, 320, 34, 8, 28
+    # Wider than bar_chart: "69% second (n=80)" outgrows "69% (n=80)".
+    width = 720
+    height = pad_top + len(rows) * row_h + pad_bottom
+    mid_x = label_w + bar_w / 2
+
+    parts = []
+    for i, (label, rate, n) in enumerate(rows):
+        y = pad_top + i * row_h
+        parts.append(
+            f'<text x="{label_w - 10}" y="{y + row_h / 2}" text-anchor="end" '
+            f'dominant-baseline="middle" font-size="14">{html.escape(label)}</text>'
+        )
+        parts.append(
+            f'<rect x="{label_w}" y="{y + 8}" width="{bar_w}" height="18" '
+            f'fill="{TINT_20}" rx="3"/>'
+        )
+        if rate is not None:
+            length = abs(rate - 0.5) * bar_w  # a 50-point lean fills a half-track
+            x = mid_x if rate >= 0.5 else mid_x - length
+            parts.append(
+                f'<rect x="{x:.1f}" y="{y + 8}" width="{length:.1f}" height="18" '
+                f'fill="{band_colour(rate)}"/>'
+            )
+            note = f"{pct(rate)} first" if rate >= 0.5 else f"{pct(1 - rate)} second"
+            parts.append(
+                f'<text x="{label_w + bar_w + 8}" y="{y + row_h / 2}" '
+                f'dominant-baseline="middle" font-size="14">'
+                f"{note} (n={n})</text>"
+            )
+        else:
+            parts.append(
+                f'<text x="{label_w + 8}" y="{y + row_h / 2}" '
+                f'dominant-baseline="middle" font-size="13" fill="{MUTED}">'
+                f"not enough data (n={n})</text>"
+            )
+
+    line_bottom = pad_top + len(rows) * row_h + 4
+    parts.append(
+        f'<line x1="{mid_x}" y1="{pad_top - 2}" x2="{mid_x}" y2="{line_bottom}" '
+        f'stroke="{MUTED}" stroke-dasharray="4 3"/>'
+    )
+    parts.append(
+        f'<text x="{mid_x}" y="{line_bottom + 16}" text-anchor="middle" '
+        f'font-size="12" fill="{MUTED}">50%</text>'
+    )
+    parts.append(
+        f'<text x="{label_w}" y="{line_bottom + 16}" font-size="12" '
+        f'fill="{MUTED}">&#9664; picks second-listed</text>'
+    )
+    parts.append(
+        f'<text x="{label_w + bar_w}" y="{line_bottom + 16}" text-anchor="end" '
+        f'font-size="12" fill="{MUTED}">picks first-listed &#9654;</text>'
+    )
+
+    return (
+        f'<svg class="chart" role="img" aria-labelledby="{chart_id}-title" '
+        f'viewBox="0 0 {width} {height}" xmlns="http://www.w3.org/2000/svg">'
+        f'<title id="{chart_id}-title">Diverging bar chart: bars grow left of the '
+        f"50% centre line when the model favours the second-listed option, "
+        f"right when it favours the first</title>"
+        f'<g fill="{TEXT}">{"".join(parts)}</g></svg>'
+    )
+
+
 def favourites_chart(chart_id: str, picks) -> str:
     """Split bars for the strongest default favourites: winner's share of
     the pair's decided no-preference answers.
@@ -340,13 +415,15 @@ def chart_data(table: str, brief: bool) -> str:
 AGREE_CAPTION = (
     "Half the prompts said the user preferred one option, half the other. A "
     "model that ignores that sentence lands at the dashed 50% line; higher "
-    "means it follows the user's expressed preference."
+    "means it follows the user's expressed preference. Bars are ordered "
+    "lowest agreement first."
 )
 POSITION_CAPTION = (
-    "With no preference expressed, how often the model picked whichever "
-    "option was listed first. Near the dashed 50% line, listing order "
-    "doesn't matter; far from it, the order of the options is changing the "
-    "model's answers."
+    "With no preference expressed: bars grow left of the centre line when "
+    "the model favours whichever option was listed second, right when it "
+    "favours the first — the longer the bar, the more the listing order "
+    "sways its answers. Rows run from the strongest second-listed lean to "
+    "the strongest first-listed lean."
 )
 FAVOURITES_CAPTION = (
     "The model's own leanings when no preference was expressed. Only splits "
@@ -354,8 +431,8 @@ FAVOURITES_CAPTION = (
     "nearer 50:50 is treated as noise, not preference."
 )
 BAND_LEGEND = (
-    "Bars are ordered least-swayed first and coloured by distance from the "
-    "50% line: blue within 10 points, yellow within 25, red beyond."
+    "Bars are coloured by distance from the 50% line: blue within 10 "
+    "points, yellow within 25, red beyond."
 )
 
 
@@ -378,7 +455,7 @@ def eval_section(eval_name: str, summaries: list[GroupSummary], brief: bool = Fa
                 f'<p class="counts">{html.escape(counts_line)}{error_note}</p></div>'
             )
 
-    agree_order = by_least_swayed(summaries, lambda gs: gs.stated_agree_rate)
+    agree_order = by_rate(summaries, lambda gs: gs.stated_agree_rate)
     blocks.append(
         "<figure><figcaption>Agreement with an expressed user preference</figcaption>"
         + bar_chart(
@@ -392,17 +469,22 @@ def eval_section(eval_name: str, summaries: list[GroupSummary], brief: bool = Fa
         ), brief)
         + "</figure>"
     )
-    first_order = by_least_swayed(summaries, lambda gs: gs.baseline_first_rate)
+    first_order = by_rate(summaries, lambda gs: gs.baseline_first_rate)
     blocks.append(
-        "<figure><figcaption>First-option rate when no preference is expressed (position bias)</figcaption>"
-        + bar_chart(
+        "<figure><figcaption>Position bias when no preference is expressed</figcaption>"
+        + diverging_chart(
             f"first-{safe}",
             [(display_model(gs.model), gs.baseline_first_rate, gs.baseline_decided_n) for gs in first_order],
         )
         + f'<p class="caption">{POSITION_CAPTION} {BAND_LEGEND}</p>'
         + chart_data(chart_table(
-            ["Model", "First-option rate", "Decided answers"],
-            [[display_model(gs.model), rate_cell(gs.baseline_first_rate), str(gs.baseline_decided_n)] for gs in first_order],
+            ["Model", "First-option rate", "Second-option rate", "Decided answers"],
+            [[
+                display_model(gs.model),
+                rate_cell(gs.baseline_first_rate),
+                rate_cell(1 - gs.baseline_first_rate if gs.baseline_first_rate is not None else None),
+                str(gs.baseline_decided_n),
+            ] for gs in first_order],
         ), brief)
         + "</figure>"
     )
